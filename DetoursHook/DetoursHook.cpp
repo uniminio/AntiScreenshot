@@ -40,6 +40,10 @@ BEGIN_MESSAGE_MAP(CDetoursHookApp, CWinApp)
 END_MESSAGE_MAP()
 
 
+extern BOOL injected = FALSE;
+extern HHOOK g_hhk = nullptr;
+extern HINSTANCE g_instance = nullptr;
+
 // CDetoursHookApp 构造
 
 CDetoursHookApp::CDetoursHookApp()
@@ -56,9 +60,118 @@ CDetoursHookApp theApp;
 
 // CDetoursHookApp 初始化
 
+BOOL WINAPI NewMessageBoxA(HWND, LPCSTR, LPCSTR, UINT)
+{
+	return MyMessageBoxA(NULL, "Hook", "Hook", 0);
+}
+
+BOOL WINAPI NewBitBlt(
+	HDC   hdc,
+	int   x,
+	int   y,
+	int   cx,
+	int   cy,
+	HDC   hdcSrc,
+	int   x1,
+	int   y1,
+	DWORD rop
+)
+{
+
+	HWND hdesk = GetDesktopWindow();
+	RECT deskRect;
+	GetWindowRect(hdesk, &deskRect);
+	if (cx == deskRect.right - deskRect.left && cy == deskRect.bottom - deskRect.top)
+	{
+		auto hclient =  FindWindow(NULL, L"AntiCapture");
+		RECT clientRect;
+		GetWindowRect(hclient, &clientRect);
+		if (MyBitBlt(hdc, x, y, cx, cy, hdcSrc, x1, y1, rop))
+		{
+			if (MyBitBlt(hdc, clientRect.left, clientRect.top, clientRect.right - clientRect.left, clientRect.bottom - clientRect.top, hdcSrc, clientRect.left, clientRect.top, BLACKNESS))
+			{
+				return TRUE;
+			}
+
+		}
+		return FALSE;
+	}
+	else
+	{
+		return MyBitBlt(hdc, x, y, cx, cy, hdcSrc, x1, y1, rop);
+	}
+	return TRUE;
+}
+
 BOOL CDetoursHookApp::InitInstance()
 {
 	CWinApp::InitInstance();
+	g_instance = AfxGetInstanceHandle();
+	return Inject();
+}
 
+BOOL CDetoursHookApp::ExitInstance()
+{
+	return HookOff();
+}
+
+BOOL Inject()
+{
+	if (injected)
+	{
+		return TRUE;
+	}
+	injected = TRUE;
+	return HookOn();
+}
+
+BOOL HookOn()
+{
+	DetourRestoreAfterWith();
+	DetourTransactionBegin();
+	
+	DetourUpdateThread(GetCurrentThread());
+	DetourAttach(&(PVOID&)MyBitBlt, NewBitBlt);
+	DetourTransactionCommit();
 	return TRUE;
 }
+
+BOOL HookOff()
+{
+	DetourTransactionBegin();
+	DetourUpdateThread(GetCurrentThread());
+	DetourDetach(&(PVOID&)MyBitBlt, NewBitBlt);
+	DetourTransactionCommit();
+	return TRUE;
+}
+
+LRESULT CALLBACK GetMsgProc(
+	_In_ int    code,
+	_In_ WPARAM wParam,
+	_In_ LPARAM lParam
+)
+{
+	return CallNextHookEx(g_hhk, code, wParam, lParam);
+}
+
+BOOL StartGlobalHook()
+{
+	if (g_hhk == nullptr)
+	{
+		g_hhk = SetWindowsHookEx(WH_GETMESSAGE, GetMsgProc, g_instance, 0);
+	}
+	return g_hhk != nullptr;
+}
+
+BOOL StopGlobalHook()
+{
+	HookOff();
+	if (g_hhk != nullptr)
+	{
+		UnhookWindowsHookEx(g_hhk);
+		g_hhk = nullptr;
+	}
+	return true;
+}
+
+
